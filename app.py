@@ -12,10 +12,18 @@ from composite_core import process_video, prepare_preview, composite_single_fram
 st.set_page_config(page_title="Green Screen Compositor", layout="wide")
 
 st.title("🎬 Green Screen Compositor")
-st.caption("Replace a sliding coloured placeholder in a video with a replacement clip.")
+
+# ── Workflow guide ─────────────────────────────────────────────────────────────
+st.info(
+    "**How to use:** &nbsp; ① Upload both videos &nbsp;→&nbsp; "
+    "② Adjust key settings &nbsp;→&nbsp; "
+    "③ *(Optional)* Open **Framing** to preview & adjust crop &nbsp;→&nbsp; "
+    "④ Click **▶ Process Video** to render the final output",
+    icon="👆",
+)
 
 # ── Layout ─────────────────────────────────────────────────────────────────────
-left, right = st.columns([1, 1])
+left, right = st.columns([11, 9])
 
 with left:
     src_file = st.file_uploader("① Source video  (contains the coloured placeholder)",
@@ -47,6 +55,7 @@ with left:
             value="#00b140",
             help="Enter any hex colour, e.g. #00b140. Must start with #.",
         )
+
     tolerance = st.slider(
         "Tolerance",
         0, 180, 60,
@@ -54,7 +63,7 @@ with left:
             "How far (in RGB Euclidean distance) a pixel can be from the key colour "
             "and still be replaced.\n"
             "• Range: 0–180\n"
-            "• Too low → placeholder colour not fully removed (green patches remain)\n"
+            "• Too low → placeholder colour not fully removed (colour patches remain)\n"
             "• Too high → nearby colours also get replaced\n"
             "• Default 60 works well for a clean solid-colour placeholder."
         ),
@@ -83,7 +92,8 @@ with left:
         ),
     )
 
-    with st.expander("✂️ Framing (optional)"):
+    # ── Framing expander (with live preview inside) ───────────────────────────
+    with st.expander("✂️ Framing  *(optional — open to adjust crop & preview)*"):
         col1, col2 = st.columns(2)
         zoom = col1.slider(
             "Zoom",
@@ -96,7 +106,7 @@ with left:
                 "• Use Pan X/Y to choose which part is visible after zooming."
             ),
         )
-        col2.write("")   # spacer
+        col2.write("")
 
         pan_x = col1.slider(
             "Pan X",
@@ -104,7 +114,7 @@ with left:
             help=(
                 "Horizontal crop position in the replacement video.\n"
                 "• Range: 0.0 (left edge) → 1.0 (right edge)\n"
-                "• Only visible when Zoom > 1.0 or the replacement clip is wider than the placeholder."
+                "• Only has effect when Zoom > 1.0."
             ),
         )
         pan_y = col2.slider(
@@ -113,7 +123,7 @@ with left:
             help=(
                 "Vertical crop position in the replacement video.\n"
                 "• Range: 0.0 (top) → 1.0 (bottom)\n"
-                "• Only visible when Zoom > 1.0 or the replacement clip is taller than the placeholder."
+                "• Only has effect when Zoom > 1.0."
             ),
         )
         offset_x = col1.slider(
@@ -122,8 +132,7 @@ with left:
             help=(
                 "Nudge the replacement image left or right inside the placeholder.\n"
                 "• Range: −200 → +200 px\n"
-                "• Positive = shift right, Negative = shift left\n"
-                "• Useful to correct tiny mis-registration."
+                "• Positive = shift right, Negative = shift left."
             ),
         )
         offset_y = col2.slider(
@@ -136,65 +145,57 @@ with left:
             ),
         )
 
-    process = st.button("▶  Process Video", type="primary", use_container_width=True)
+        # ── Live preview (inside framing expander) ────────────────────────────
+        if src_file and bg_file:
+            st.divider()
+            st.caption("📐 **Reference frame** — shows how your replacement clip will be framed. "
+                       "Adjust sliders above until it looks right, then close this and click ▶ Process Video.")
 
-# ── Right column: preview + output ─────────────────────────────────────────────
+            cache_key = f"{src_file.name}_{src_file.size}_{bg_file.name}_{bg_file.size}"
+
+            if st.session_state.get("preview_cache_key") != cache_key:
+                tmp_prev      = tempfile.mkdtemp()
+                src_prev_path = os.path.join(tmp_prev, src_file.name)
+                bg_prev_path  = os.path.join(tmp_prev, bg_file.name)
+                src_file.seek(0)
+                bg_file.seek(0)
+                with open(src_prev_path, "wb") as f: f.write(src_file.read())
+                with open(bg_prev_path,  "wb") as f: f.write(bg_file.read())
+
+                with st.spinner("Scanning for best preview frame…"):
+                    pv = prepare_preview(src_prev_path, bg_prev_path,
+                                         key_hex=key_color, tolerance=tolerance)
+
+                st.session_state["preview_data"]      = pv
+                st.session_state["preview_cache_key"] = cache_key
+            else:
+                pv = st.session_state.get("preview_data")
+
+            if pv is not None:
+                composed = composite_single_frame(
+                    pv,
+                    key_hex=key_color, tolerance=tolerance,
+                    softness=softness, spill=spill,
+                    zoom=zoom, pan_x=pan_x, pan_y=pan_y,
+                    offset_x=offset_x, offset_y=offset_y,
+                )
+                if composed is not None:
+                    # Show at fixed pixel width so it doesn't dominate the screen
+                    st.image(cv2.cvtColor(composed, cv2.COLOR_BGR2RGB),
+                             width=520, caption="Preview frame (not the final video)")
+            else:
+                st.warning("No placeholder found with current Key Colour / Tolerance — "
+                           "adjust them and reopen this section.")
+        else:
+            st.caption("Upload both videos to see the framing preview here.")
+
+    st.button("▶  Process Video", type="primary", use_container_width=True, key="process_btn")
+
+# ── Right column: output only ──────────────────────────────────────────────────
 with right:
-
-    # ── Live preview ──────────────────────────────────────────────────────────
-    if src_file and bg_file:
-        # Save uploads to stable temp paths keyed by file names + sizes
-        # so we only re-scan when files actually change.
-        cache_key = f"{src_file.name}_{src_file.size}_{bg_file.name}_{bg_file.size}"
-
-        if st.session_state.get("preview_cache_key") != cache_key:
-            # Files changed — save to disk and re-scan
-            tmp_prev = tempfile.mkdtemp()
-            src_prev_path = os.path.join(tmp_prev, src_file.name)
-            bg_prev_path  = os.path.join(tmp_prev, bg_file.name)
-            src_file.seek(0)
-            bg_file.seek(0)
-            with open(src_prev_path, "wb") as f: f.write(src_file.read())
-            with open(bg_prev_path,  "wb") as f: f.write(bg_file.read())
-
-            with st.spinner("Scanning for preview frame…"):
-                pv = prepare_preview(src_prev_path, bg_prev_path,
-                                     key_hex=key_color,
-                                     tolerance=tolerance)
-
-            st.session_state["preview_data"]      = pv
-            st.session_state["preview_cache_key"] = cache_key
-            st.session_state["preview_src_path"]  = src_prev_path
-            st.session_state["preview_bg_path"]   = bg_prev_path
-        else:
-            pv = st.session_state.get("preview_data")
-
-        if pv is not None:
-            st.subheader("🖼 Framing Preview")
-            st.caption("Updates live as you move the Framing sliders.")
-
-            composed = composite_single_frame(
-                pv,
-                key_hex=key_color,
-                tolerance=tolerance,
-                softness=softness,
-                spill=spill,
-                zoom=zoom,
-                pan_x=pan_x,
-                pan_y=pan_y,
-                offset_x=offset_x,
-                offset_y=offset_y,
-            )
-            if composed is not None:
-                # Convert BGR → RGB for st.image
-                st.image(cv2.cvtColor(composed, cv2.COLOR_BGR2RGB),
-                         use_container_width=True)
-        else:
-            st.info("ℹ️ No placeholder found with current Key Color / Tolerance — "
-                    "adjust them and the preview will appear here.")
-
-    # ── Processing output ─────────────────────────────────────────────────────
     st.subheader("Output")
+
+    process = st.session_state.get("process_btn", False)
 
     if process:
         if not src_file:
@@ -202,8 +203,7 @@ with right:
         elif not bg_file:
             st.error("Please upload a replacement video.")
         else:
-            tmp = tempfile.mkdtemp()
-
+            tmp      = tempfile.mkdtemp()
             src_path = os.path.join(tmp, src_file.name)
             bg_path  = os.path.join(tmp, bg_file.name)
             out_path = os.path.join(tmp, "output.mp4")
@@ -223,7 +223,7 @@ with right:
                 bar.progress(min(overall, 1.0))
                 status.info(msg)
                 log_lines.append(msg)
-                log_box.text("\n".join(log_lines[-6:]))
+                log_box.text("\n".join(log_lines[-4:]))
 
             try:
                 process_video(
@@ -235,9 +235,12 @@ with right:
                     progress_cb=progress_cb,
                 )
                 bar.progress(1.0)
-                status.success("✓ Done!")
+                status.success("✓ Done! Watch the video below or download it.")
+                log_box.empty()
 
-                st.video(out_path)
+                # Show video at constrained size
+                vid_col, _ = st.columns([3, 1])
+                vid_col.video(out_path)
 
                 with open(out_path, "rb") as f:
                     st.download_button(
@@ -250,3 +253,5 @@ with right:
 
             except Exception as e:
                 status.error(f"Error: {e}")
+    else:
+        st.caption("Your rendered video will appear here after you click ▶ Process Video.")
