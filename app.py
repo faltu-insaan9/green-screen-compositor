@@ -24,15 +24,29 @@ with left:
                                  type=["mp4", "mov", "avi", "mkv"])
 
     st.subheader("🎨 Key settings")
-    key_color = st.text_input(
-        "Placeholder colour (hex)",
-        value="#00b140",
+    KEY_PRESETS = {
+        "Green  (#00b140)": "#00b140",
+        "Blue   (#0047FF)": "#0047FF",
+        "Custom": None,
+    }
+    preset_choice = st.selectbox(
+        "Placeholder colour",
+        list(KEY_PRESETS.keys()),
         help=(
-            "Hex code of the solid-colour rectangle in the source video, e.g. #00b140. "
-            "Use a colour picker (e.g. imagecolorpicker.com) to sample the exact colour "
-            "from the source video if unsure."
+            "Choose the colour of the solid rectangle in your source video.\n"
+            "• Green / Blue are standard chroma-key colours\n"
+            "• Custom: type any hex code (use imagecolorpicker.com to sample the exact colour)"
         ),
     )
+    if KEY_PRESETS[preset_choice] is not None:
+        key_color = KEY_PRESETS[preset_choice]
+        st.caption(f"Using `{key_color}`")
+    else:
+        key_color = st.text_input(
+            "Custom hex code",
+            value="#00b140",
+            help="Enter any hex colour, e.g. #00b140. Must start with #.",
+        )
     tolerance = st.slider(
         "Tolerance",
         0, 180, 60,
